@@ -8,12 +8,41 @@ load_dotenv()
 CFBD_KEY = os.getenv("CFBD_API_KEY")
 
 
+# ── CONFERENCE TIER ───────────────────────────────────────────
+
+def get_conference_multiplier(conference: str) -> float:
+    """
+    Returns a multiplier based on conference strength.
+    Applied to raw dominator rating before S-curve scaling.
+    Elite conferences get a boost since production against better
+    competition is more predictive of NFL success.
+    """
+    if not conference:
+        return 1.0
+
+    conf = conference.lower()
+
+    elite = ["sec", "big ten"]
+    strong = ["big 12", "acc"]
+    mid = ["pac-12", "pac 12", "american athletic", "aac"]
+
+    if any(e in conf for e in elite):
+        return 1.20
+    elif any(s in conf for s in strong):
+        return 1.10
+    elif any(m in conf for m in mid):
+        return 1.00
+    else:
+        return 0.90
+
+
 # ── COLLEGE STATS ─────────────────────────────────────────────
 
 def get_college_receiving_stats(player_name: str, college: str) -> list:
     """
     Pulls all available college receiving seasons for a player from CFBD.
     Calculates target share as player receptions / team total receptions.
+    Also captures conference for dominator rating adjustment.
     Returns a list of dicts, one per season.
     """
     headers = {"Authorization": f"Bearer {CFBD_KEY}"}
@@ -36,12 +65,16 @@ def get_college_receiving_stats(player_name: str, college: str) -> list:
         team_yards = 0
         team_tds = 0
         team_rec = 0
+        conference = ""
         found = False
 
         for s in stats_results:
             stat_type = s.get("statType")
             val = float(s.get("stat", 0))
             name = s.get("player", "")
+
+            if player_name.lower() in name.lower():
+                conference = s.get("conference", "")
 
             if stat_type == "YDS":
                 team_yards += val
@@ -68,7 +101,8 @@ def get_college_receiving_stats(player_name: str, college: str) -> list:
                 "team_yards": team_yards,
                 "team_tds": team_tds,
                 "team_rec": team_rec,
-                "target_share": target_share
+                "target_share": target_share,
+                "conference": conference
             })
 
     return seasons_data
@@ -106,7 +140,9 @@ def score_dominator_rating(seasons: list) -> float:
     Weighted average dominator rating across all college seasons.
     Dominator rating = 50% yard share + 50% TD share.
     Compared against all skill position receivers on the team.
-    Scaled with S-curve anchored at 22% = 0.5 (historical average first round WR).
+    Conference multiplier applied before S-curve to reward production
+    against stronger competition.
+    S-curve anchored at 22% = 0.5 (historical average first round WR).
     Returns a 0-1 score.
     """
     if not seasons:
@@ -120,11 +156,17 @@ def score_dominator_rating(seasons: list) -> float:
         team_tds = s.get("team_tds", 0)
         player_yards = s.get("yards", 0)
         player_tds = s.get("tds", 0)
+        conference = s.get("conference", "")
 
         if team_yards > 0 and team_tds > 0:
             yard_share = player_yards / team_yards
             td_share = player_tds / team_tds
-            dominators.append((yard_share * 0.5) + (td_share * 0.5))
+            raw_dominator = (yard_share * 0.5) + (td_share * 0.5)
+
+            # Apply conference multiplier before S-curve
+            multiplier = get_conference_multiplier(conference)
+            adjusted_dominator = raw_dominator * multiplier
+            dominators.append(adjusted_dominator)
         else:
             dominators.append(0)
 
@@ -172,8 +214,8 @@ def score_age(age: int) -> float:
 
 def get_espn_team_id_map() -> dict:
     """
-    Pulls all NFL teams from ESPN API and returns a dict of abbreviation -> team ID.
-    Used to look up the correct ESPN team ID for passing attempts data.
+    Pulls all NFL teams from ESPN API.
+    Returns dict of abbreviation -> team ID.
     """
     url = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/teams"
     r = requests.get(url)
@@ -183,8 +225,8 @@ def get_espn_team_id_map() -> dict:
 
 def get_team_passing_attempts(team_id: int, season: int = 2024) -> float:
     """
-    Pulls total passing attempts for a team in a given season from ESPN API.
-    Returns passing attempts as a float, or 0 if not found.
+    Pulls total passing attempts for a team from ESPN API.
+    Returns passing attempts as float, or 0 if not found.
     """
     url = f"https://site.api.espn.com/apis/site/v2/sports/football/nfl/teams/{team_id}/statistics"
     r = requests.get(url, params={"season": season})
@@ -199,14 +241,14 @@ def get_team_passing_attempts(team_id: int, season: int = 2024) -> float:
 
 def score_landing_spot(nfl_team: str) -> float:
     """
-    Scores landing spot quality based on 2024 team passing attempts from ESPN.
-    Pulls all 32 teams dynamically, ranks them, scores player's team 0-1.
-    Returns 0.5 if team abbreviation not found.
+    Scores landing spot based on 2024 team passing attempts from ESPN.
+    Weight intentionally reduced to 15% since depth chart situation
+    and target share opportunity are handled by the LLM analysis layer.
+    Returns 0.5 if team not found.
     """
     team_id_map = get_espn_team_id_map()
 
     if nfl_team not in team_id_map:
-        print(f"Team not found in ESPN data: {nfl_team}")
         return 0.5
 
     team_attempts = {}
@@ -229,7 +271,9 @@ def score_landing_spot(nfl_team: str) -> float:
 def score_wr(name: str, college: str, age: int, nfl_team: str) -> dict:
     """
     Combines all four factors into a final weighted dynasty score for TEP WR rookie draft.
-    Weights: dominator rating 35%, age 25%, target share 20%, landing spot 20%.
+    Weights: dominator rating 40%, age 30%, target share 15%, landing spot 15%.
+    Landing spot weight reduced because situational context is handled by LLM layer.
+    Conference adjustment applied to dominator rating to reward SEC/Big Ten production.
     """
     seasons = get_college_receiving_stats(name, college)
 
@@ -239,10 +283,10 @@ def score_wr(name: str, college: str, age: int, nfl_team: str) -> dict:
     landing = score_landing_spot(nfl_team)
 
     final_score = round(
-        (dominator * 0.35) +
-        (age_score * 0.25) +
-        (target * 0.20) +
-        (landing * 0.20),
+        (dominator * 0.40) +
+        (age_score * 0.30) +
+        (target * 0.15) +
+        (landing * 0.15),
         4
     )
 
@@ -273,6 +317,8 @@ result = score_wr(
 for k, v in result.items():
     print(f"{k}: {v}")
 
+print("\n")
+
 result2 = score_wr(
     name="Tetairoa McMillan",
     college="Arizona",
@@ -280,6 +326,5 @@ result2 = score_wr(
     nfl_team="CAR"
 )
 
-print("\n")
 for k, v in result2.items():
     print(f"{k}: {v}")
