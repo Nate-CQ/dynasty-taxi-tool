@@ -2,6 +2,7 @@ import requests
 import os
 import math
 from dotenv import load_dotenv
+from draft import get_player_draft_info, score_draft_capital
 
 load_dotenv()
 
@@ -14,14 +15,11 @@ def get_conference_multiplier(conference: str) -> float:
     """
     Returns a multiplier based on conference strength.
     Applied to raw dominator rating before S-curve scaling.
-    Elite conferences get a boost since production against better
-    competition is more predictive of NFL success.
     """
     if not conference:
         return 1.0
 
     conf = conference.lower()
-
     elite = ["sec", "big ten"]
     strong = ["big 12", "acc"]
     mid = ["pac-12", "pac 12", "american athletic", "aac"]
@@ -73,12 +71,10 @@ def get_college_te_stats(player_name: str, college: str) -> list:
             stat_type = s.get("statType")
             val = float(s.get("stat", 0))
             name = s.get("player", "")
-            position = s.get("position", "")
 
             if player_name.lower() in name.lower():
                 conference = s.get("conference", "")
 
-            # Team totals include all positions
             if stat_type == "YDS":
                 team_yards += val
                 if player_name.lower() in name.lower():
@@ -95,7 +91,6 @@ def get_college_te_stats(player_name: str, college: str) -> list:
 
         if found:
             target_share = round(player_rec / team_rec, 4) if team_rec > 0 else 0
-
             seasons_data.append({
                 "year": year,
                 "yards": player_yards,
@@ -164,7 +159,6 @@ def score_dominator_rating(seasons: list) -> float:
             yard_share = player_yards / team_yards
             td_share = player_tds / team_tds
             raw_dominator = (yard_share * 0.5) + (td_share * 0.5)
-
             multiplier = get_conference_multiplier(conference)
             adjusted_dominator = raw_dominator * multiplier
             dominators.append(adjusted_dominator)
@@ -182,7 +176,6 @@ def score_dominator_rating(seasons: list) -> float:
 def score_target_share(seasons: list) -> float:
     """
     Weighted average reception share across all college seasons.
-    Calculated as player receptions / team total receptions.
     Confirms TE was a real pass catcher not just a blocker.
     Returns a 0-1 score.
     """
@@ -244,8 +237,8 @@ def get_team_passing_attempts(team_id: int, season: int = 2024) -> float:
 def score_landing_spot(nfl_team: str) -> float:
     """
     Scores landing spot based on 2024 team passing attempts from ESPN.
-    Weight intentionally reduced to 15% since depth chart situation
-    and target share opportunity are handled by the LLM analysis layer.
+    Weight intentionally reduced to 10% since situational context
+    is handled by the LLM analysis layer.
     Returns 0.5 if team not found.
     """
     team_id_map = get_espn_team_id_map()
@@ -272,12 +265,14 @@ def score_landing_spot(nfl_team: str) -> float:
 
 def score_te(name: str, college: str, age: int, nfl_team: str) -> dict:
     """
-    Combines all four factors into a final weighted dynasty score for TEP TE rookie draft.
-    Weights: age 35%, dominator rating 30%, target share 20%, landing spot 15%.
+    Combines all five factors into a final weighted dynasty score for TEP TE rookie draft.
+    Weights: age 30%, dominator 25%, target share 15%, landing spot 10%, draft capital 10% (lower for TEs).
     Age weighted highest because TEs develop slowest and TEP amplifies age runway.
-    Landing spot weight reduced because situational context handled by LLM layer.
+    Draft capital weighted lower since college production is more predictive for TEs.
     """
     seasons = get_college_te_stats(name, college)
+    draft_info = get_player_draft_info(name)
+    draft = score_draft_capital(draft_info["overall"])
 
     age_score = score_age_te(age)
     dominator = score_dominator_rating(seasons)
@@ -285,10 +280,11 @@ def score_te(name: str, college: str, age: int, nfl_team: str) -> dict:
     landing = score_landing_spot(nfl_team)
 
     final_score = round(
-        (age_score * 0.35) +
-        (dominator * 0.30) +
-        (target * 0.20) +
-        (landing * 0.15),
+        (age_score * 0.30) +
+        (dominator * 0.35) +
+        (target * 0.15) +
+        (landing * 0.10) +
+        (draft * 0.10),
         4
     )
 
@@ -299,6 +295,9 @@ def score_te(name: str, college: str, age: int, nfl_team: str) -> dict:
         "dominator_rating": dominator,
         "target_share": target,
         "landing_spot": landing,
+        "draft_capital": draft,
+        "draft_pick": draft_info["overall"],
+        "draft_round": draft_info["round"],
         "seasons_found": len(seasons)
     }
 

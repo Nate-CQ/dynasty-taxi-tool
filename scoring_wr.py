@@ -2,6 +2,7 @@ import requests
 import os
 import math
 from dotenv import load_dotenv
+from draft import get_player_draft_info, score_draft_capital
 
 load_dotenv()
 
@@ -162,8 +163,6 @@ def score_dominator_rating(seasons: list) -> float:
             yard_share = player_yards / team_yards
             td_share = player_tds / team_tds
             raw_dominator = (yard_share * 0.5) + (td_share * 0.5)
-
-            # Apply conference multiplier before S-curve
             multiplier = get_conference_multiplier(conference)
             adjusted_dominator = raw_dominator * multiplier
             dominators.append(adjusted_dominator)
@@ -242,7 +241,7 @@ def get_team_passing_attempts(team_id: int, season: int = 2024) -> float:
 def score_landing_spot(nfl_team: str) -> float:
     """
     Scores landing spot based on 2024 team passing attempts from ESPN.
-    Weight intentionally reduced to 15% since depth chart situation
+    Weight intentionally reduced to 10% since depth chart situation
     and target share opportunity are handled by the LLM analysis layer.
     Returns 0.5 if team not found.
     """
@@ -270,12 +269,14 @@ def score_landing_spot(nfl_team: str) -> float:
 
 def score_wr(name: str, college: str, age: int, nfl_team: str) -> dict:
     """
-    Combines all four factors into a final weighted dynasty score for TEP WR rookie draft.
-    Weights: dominator rating 40%, age 30%, target share 15%, landing spot 15%.
-    Landing spot weight reduced because situational context is handled by LLM layer.
-    Conference adjustment applied to dominator rating to reward SEC/Big Ten production.
+    Combines all five factors into a final weighted dynasty score for TEP WR rookie draft.
+    Weights: dominator 37%, age 28%, target share 15%, landing spot 10%, draft capital 10%.
+    Draft capital pulled automatically from ESPN draft data.
+    Landing spot weight reduced because situational context handled by LLM layer.
     """
     seasons = get_college_receiving_stats(name, college)
+    draft_info = get_player_draft_info(name)
+    draft = score_draft_capital(draft_info["overall"])
 
     dominator = score_dominator_rating(seasons)
     age_score = score_age(age)
@@ -283,10 +284,11 @@ def score_wr(name: str, college: str, age: int, nfl_team: str) -> dict:
     landing = score_landing_spot(nfl_team)
 
     final_score = round(
-        (dominator * 0.40) +
-        (age_score * 0.30) +
+        (dominator * 0.37) +
+        (age_score * 0.28) +
         (target * 0.15) +
-        (landing * 0.15),
+        (landing * 0.10) +
+        (draft * 0.10),
         4
     )
 
@@ -297,15 +299,14 @@ def score_wr(name: str, college: str, age: int, nfl_team: str) -> dict:
         "age_score": age_score,
         "target_share": target,
         "landing_spot": landing,
+        "draft_capital": draft,
+        "draft_pick": draft_info["overall"],
+        "draft_round": draft_info["round"],
         "seasons_found": len(seasons)
     }
 
 
 # ── TEST ──────────────────────────────────────────────────────
-
-seasons = get_college_receiving_stats("Malik Nabers", "LSU")
-for s in seasons:
-    print(s)
 
 result = score_wr(
     name="Malik Nabers",

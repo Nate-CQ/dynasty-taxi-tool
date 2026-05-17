@@ -2,6 +2,7 @@ import requests
 import os
 import math
 from dotenv import load_dotenv
+from draft import get_player_draft_info, score_draft_capital
 
 load_dotenv()
 
@@ -22,7 +23,6 @@ def get_college_qb_stats(player_name: str, college: str) -> dict:
 
     for year in range(2024, 2018, -1):
 
-        # Pull passing stats
         pass_r = requests.get(stats_url, headers=headers, params={
             "year": year,
             "team": college,
@@ -67,7 +67,6 @@ def get_college_qb_stats(player_name: str, college: str) -> dict:
         if not found or att < 100:
             continue
 
-        # Pull rushing stats for same year
         rush_r = requests.get(stats_url, headers=headers, params={
             "year": year,
             "team": college,
@@ -137,15 +136,14 @@ def score_qb_production(stats: dict) -> float:
     Each component scored 0-1 using S-curve anchored to historical averages.
 
     Component weights:
-    - YPA: 30% (scheme-independent efficiency)
-    - TD:INT ratio: 30% (decision making)
-    - Completion %: 20% (accuracy)
-    - Rushing contribution: 20% (mobility and scoring floor)
+    - YPA: 30%
+    - TD:INT ratio: 30%
+    - Completion %: 20%
+    - Rushing contribution: 20%
 
     Rushing S-curve midpoints:
     - YPC midpoint: 4.0 (average mobile college QB)
     - Rushing TDs midpoint: 5 (average mobile college QB)
-    Pocket passers with negative YPC correctly score near 0 on rushing.
     """
     if not stats:
         return 0
@@ -154,11 +152,8 @@ def score_qb_production(stats: dict) -> float:
     td_int_score = sigmoid(stats.get("td_int_ratio", 0), midpoint=2.5, steepness=0.5)
     comp_pct_score = sigmoid(stats.get("completion_pct", 0), midpoint=0.62, steepness=15)
 
-    # Rushing composite: average of YPC and rushing TD scores
     rush_ypc = stats.get("rush_ypc", 0)
     rush_tds = stats.get("rush_tds", 0)
-
-    # Cap YPC at 0 minimum so negative values don't distort the sigmoid
     rush_ypc_capped = max(rush_ypc, 0)
     rush_ypc_score = sigmoid(rush_ypc_capped, midpoint=4.0, steepness=0.5)
     rush_td_score = sigmoid(rush_tds, midpoint=5.0, steepness=0.3)
@@ -179,7 +174,6 @@ def score_qb_production(stats: dict) -> float:
 def score_age_qb(age: int) -> float:
     """
     Scores age on a 0-1 scale based on QB dynasty age curves.
-    QBs peak later than skill positions so the curve is wider.
     Age 21 or younger = 1.0, age 27 or older = 0.0.
     Linear scale between 21 and 27.
     """
@@ -210,85 +204,29 @@ def score_qb_dominator(stats: dict) -> float:
     return sigmoid(passing_yards / 4000, midpoint=1.0, steepness=3)
 
 
-# ── LANDING SPOT (QB) ─────────────────────────────────────────
-
-def get_espn_team_id_map() -> dict:
-    """
-    Pulls all NFL teams from ESPN API.
-    Returns dict of abbreviation -> team ID.
-    """
-    url = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/teams"
-    r = requests.get(url)
-    teams = r.json()["sports"][0]["leagues"][0]["teams"]
-    return {t["team"]["abbreviation"]: t["team"]["id"] for t in teams}
-
-
-def get_team_points_per_game(team_id: int, season: int = 2024) -> float:
-    """
-    Pulls total points per game for a team from ESPN API.
-    Used for QB landing spot since scoring offense reflects
-    real support around a QB, not just raw passing volume.
-    Returns points per game as float, or 0 if not found.
-    """
-    url = f"https://site.api.espn.com/apis/site/v2/sports/football/nfl/teams/{team_id}/statistics"
-    r = requests.get(url, params={"season": season})
-    categories = r.json()["results"]["stats"]["categories"]
-    for category in categories:
-        if category["name"] == "passing":
-            for stat in category["stats"]:
-                if stat["name"] == "totalPointsPerGame":
-                    return stat["value"]
-    return 0
-
-
-def score_landing_spot_qb(nfl_team: str) -> float:
-    """
-    Scores QB landing spot based on 2024 team points per game from ESPN.
-    Points per game reflects real offensive support around a QB.
-    Weight intentionally reduced to 15% since depth chart situation
-    and starter competition are handled by the LLM analysis layer.
-    Returns 0.5 if team not found.
-    """
-    team_id_map = get_espn_team_id_map()
-
-    if nfl_team not in team_id_map:
-        return 0.5
-
-    team_ppg = {}
-    for abbr, tid in team_id_map.items():
-        ppg = get_team_points_per_game(tid)
-        if ppg > 0:
-            team_ppg[abbr] = ppg
-
-    if nfl_team not in team_ppg:
-        return 0.5
-
-    sorted_teams = sorted(team_ppg.items(), key=lambda x: x[1], reverse=True)
-    rank = next((i for i, (t, _) in enumerate(sorted_teams) if t == nfl_team), 16)
-
-    return round(1 - (rank / 31), 4)
-
-
 # ── FINAL SCORE ───────────────────────────────────────────────
 
 def score_qb(name: str, college: str, age: int) -> dict:
     """
-    Combines three factors into a final weighted dynasty score for 2QB TEP QB rookie draft.
-    Weights: production 60%, age 25%, dominator 15%.
-    Landing spot removed entirely because QB situation requires contextual judgment
-    handled by the LLM analysis layer. A static metric cannot capture starter
-    competition, coaching fit, or roster construction accurately.
+    Combines four factors into a final weighted dynasty score for 2QB TEP QB rookie draft.
+    Weights: production 45%, age 20%, dominator 10%, draft capital 20% (increased for QBs).
+    Draft capital weighted higher for QBs since starting opportunity
+    is heavily determined by where a QB is drafted.
+    Landing spot removed because situational context handled by LLM layer.
     """
     stats = get_college_qb_stats(name, college)
+    draft_info = get_player_draft_info(name)
+    draft = score_draft_capital(draft_info["overall"])
 
     production = score_qb_production(stats)
     age_score = score_age_qb(age)
     dominator = score_qb_dominator(stats)
 
     final_score = round(
-        (production * 0.60) +
-        (age_score * 0.25) +
-        (dominator * 0.15),
+        (production * 0.45) +
+        (age_score * 0.20) +
+        (dominator * 0.10) +
+        (draft * 0.25),
         4
     )
 
@@ -298,6 +236,9 @@ def score_qb(name: str, college: str, age: int) -> dict:
         "production": production,
         "age_score": age_score,
         "dominator": dominator,
+        "draft_capital": draft,
+        "draft_pick": draft_info["overall"],
+        "draft_round": draft_info["round"],
         "season_used": stats.get("year"),
         "ypa": stats.get("ypa"),
         "completion_pct": stats.get("completion_pct"),
@@ -315,8 +256,11 @@ result = score_qb(
     college="Colorado",
     age=23
 )
+
 for k, v in result.items():
     print(f"{k}: {v}")
+
+print("\n")
 
 result2 = score_qb(
     name="Cameron Ward",
