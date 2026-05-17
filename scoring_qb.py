@@ -8,26 +8,27 @@ load_dotenv()
 CFBD_KEY = os.getenv("CFBD_API_KEY")
 
 
-# ── COLLEGE PASSING STATS (MOST RECENT SEASON ONLY) ───────────
+# ── COLLEGE PASSING AND RUSHING STATS (MOST RECENT SEASON ONLY) ───────────
 
-def get_college_passing_stats(player_name: str, college: str) -> dict:
+def get_college_qb_stats(player_name: str, college: str) -> dict:
     """
-    Pulls the most recent college passing season for a QB from CFBD.
+    Pulls the most recent college passing and rushing season for a QB from CFBD.
     Only uses the most recent season to account for transfer portal.
-    Requires minimum 100 attempts to filter out garbage time QBs.
-    Returns a single dict with passing stats for that season.
+    Requires minimum 100 passing attempts to filter out garbage time QBs.
+    Returns a single dict with passing and rushing stats for that season.
     """
     headers = {"Authorization": f"Bearer {CFBD_KEY}"}
     stats_url = "https://api.collegefootballdata.com/stats/player/season"
 
     for year in range(2024, 2018, -1):
-        r = requests.get(stats_url, headers=headers, params={
+
+        # Pull passing stats
+        pass_r = requests.get(stats_url, headers=headers, params={
             "year": year,
             "team": college,
             "category": "passing"
         })
-
-        results = r.json()
+        pass_results = pass_r.json()
 
         att = 0
         completions = 0
@@ -38,7 +39,7 @@ def get_college_passing_stats(player_name: str, college: str) -> dict:
         ypa = 0
         found = False
 
-        for s in results:
+        for s in pass_results:
             name = s.get("player", "")
             stat_type = s.get("statType")
             val = float(s.get("stat", 0))
@@ -63,18 +64,54 @@ def get_college_passing_stats(player_name: str, college: str) -> dict:
             elif stat_type == "YPA":
                 ypa = val
 
-        if found and att >= 100:
-            return {
-                "year": year,
-                "attempts": att,
-                "completions": completions,
-                "yards": yds,
-                "tds": tds,
-                "ints": ints,
-                "completion_pct": pct,
-                "ypa": ypa,
-                "td_int_ratio": round(tds / ints, 4) if ints > 0 else tds
-            }
+        if not found or att < 100:
+            continue
+
+        # Pull rushing stats for same year
+        rush_r = requests.get(stats_url, headers=headers, params={
+            "year": year,
+            "team": college,
+            "category": "rushing"
+        })
+        rush_results = rush_r.json()
+
+        rush_yds = 0
+        rush_tds = 0
+        rush_car = 0
+        rush_ypc = 0
+
+        for s in rush_results:
+            name = s.get("player", "")
+            stat_type = s.get("statType")
+            val = float(s.get("stat", 0))
+
+            if player_name.lower() not in name.lower():
+                continue
+
+            if stat_type == "YDS":
+                rush_yds = val
+            elif stat_type == "TD":
+                rush_tds = val
+            elif stat_type == "CAR":
+                rush_car = val
+            elif stat_type == "YPC":
+                rush_ypc = val
+
+        return {
+            "year": year,
+            "attempts": att,
+            "completions": completions,
+            "yards": yds,
+            "tds": tds,
+            "ints": ints,
+            "completion_pct": pct,
+            "ypa": ypa,
+            "td_int_ratio": round(tds / ints, 4) if ints > 0 else tds,
+            "rush_yards": rush_yds,
+            "rush_tds": rush_tds,
+            "rush_carries": rush_car,
+            "rush_ypc": rush_ypc
+        }
 
     return {}
 
@@ -96,14 +133,19 @@ def sigmoid(value: float, midpoint: float, steepness: float = 10) -> float:
 
 def score_qb_production(stats: dict) -> float:
     """
-    Composite QB production score from three components.
+    Composite QB production score from four components.
     Each component scored 0-1 using S-curve anchored to historical averages.
-    Components averaged equally into one final production score.
 
-    Historical college averages used as S-curve midpoints:
-    - YPA midpoint: 7.5
-    - TD:INT ratio midpoint: 2.5
-    - Completion % midpoint: 0.62
+    Component weights:
+    - YPA: 30% (scheme-independent efficiency)
+    - TD:INT ratio: 30% (decision making)
+    - Completion %: 20% (accuracy)
+    - Rushing contribution: 20% (mobility and scoring floor)
+
+    Rushing S-curve midpoints:
+    - YPC midpoint: 4.0 (average mobile college QB)
+    - Rushing TDs midpoint: 5 (average mobile college QB)
+    Pocket passers with negative YPC correctly score near 0 on rushing.
     """
     if not stats:
         return 0
@@ -112,7 +154,23 @@ def score_qb_production(stats: dict) -> float:
     td_int_score = sigmoid(stats.get("td_int_ratio", 0), midpoint=2.5, steepness=0.5)
     comp_pct_score = sigmoid(stats.get("completion_pct", 0), midpoint=0.62, steepness=15)
 
-    composite = round((ypa_score + td_int_score + comp_pct_score) / 3, 4)
+    # Rushing composite: average of YPC and rushing TD scores
+    rush_ypc = stats.get("rush_ypc", 0)
+    rush_tds = stats.get("rush_tds", 0)
+
+    # Cap YPC at 0 minimum so negative values don't distort the sigmoid
+    rush_ypc_capped = max(rush_ypc, 0)
+    rush_ypc_score = sigmoid(rush_ypc_capped, midpoint=4.0, steepness=0.5)
+    rush_td_score = sigmoid(rush_tds, midpoint=5.0, steepness=0.3)
+    rushing_score = round((rush_ypc_score + rush_td_score) / 2, 4)
+
+    composite = round(
+        (ypa_score * 0.30) +
+        (td_int_score * 0.30) +
+        (comp_pct_score * 0.20) +
+        (rushing_score * 0.20),
+        4
+    )
     return composite
 
 
@@ -171,8 +229,6 @@ def get_team_points_per_game(team_id: int, season: int = 2024) -> float:
     Used for QB landing spot since scoring offense reflects
     real support around a QB, not just raw passing volume.
     Returns points per game as float, or 0 if not found.
-    Note: landing spot weight is intentionally low (15%) because
-    situational context is handled by the LLM analysis layer.
     """
     url = f"https://site.api.espn.com/apis/site/v2/sports/football/nfl/teams/{team_id}/statistics"
     r = requests.get(url, params={"season": season})
@@ -215,24 +271,24 @@ def score_landing_spot_qb(nfl_team: str) -> float:
 
 # ── FINAL SCORE ───────────────────────────────────────────────
 
-def score_qb(name: str, college: str, age: int, nfl_team: str) -> dict:
+def score_qb(name: str, college: str, age: int) -> dict:
     """
-    Combines all four factors into a final weighted dynasty score for 2QB TEP QB rookie draft.
-    Weights: production 45%, age 25%, dominator 15%, landing spot 15%.
-    Landing spot weight reduced because situational context is handled by LLM layer.
+    Combines three factors into a final weighted dynasty score for 2QB TEP QB rookie draft.
+    Weights: production 60%, age 25%, dominator 15%.
+    Landing spot removed entirely because QB situation requires contextual judgment
+    handled by the LLM analysis layer. A static metric cannot capture starter
+    competition, coaching fit, or roster construction accurately.
     """
-    stats = get_college_passing_stats(name, college)
+    stats = get_college_qb_stats(name, college)
 
     production = score_qb_production(stats)
     age_score = score_age_qb(age)
     dominator = score_qb_dominator(stats)
-    landing = score_landing_spot_qb(nfl_team)
 
     final_score = round(
-        (production * 0.45) +
+        (production * 0.60) +
         (age_score * 0.25) +
-        (dominator * 0.15) +
-        (landing * 0.15),
+        (dominator * 0.15),
         4
     )
 
@@ -242,11 +298,13 @@ def score_qb(name: str, college: str, age: int, nfl_team: str) -> dict:
         "production": production,
         "age_score": age_score,
         "dominator": dominator,
-        "landing_spot": landing,
         "season_used": stats.get("year"),
         "ypa": stats.get("ypa"),
         "completion_pct": stats.get("completion_pct"),
-        "td_int_ratio": stats.get("td_int_ratio")
+        "td_int_ratio": stats.get("td_int_ratio"),
+        "rush_yards": stats.get("rush_yards"),
+        "rush_tds": stats.get("rush_tds"),
+        "rush_ypc": stats.get("rush_ypc")
     }
 
 
@@ -255,20 +313,15 @@ def score_qb(name: str, college: str, age: int, nfl_team: str) -> dict:
 result = score_qb(
     name="Shedeur Sanders",
     college="Colorado",
-    age=23,
-    nfl_team="CLE"
+    age=23
 )
-
 for k, v in result.items():
     print(f"{k}: {v}")
-
-print("\n")
 
 result2 = score_qb(
     name="Cameron Ward",
     college="Miami",
-    age=23,
-    nfl_team="TEN"
+    age=23
 )
 
 for k, v in result2.items():
