@@ -16,12 +16,13 @@ def get_college_qb_stats(player_name: str, college: str) -> dict:
     Pulls the most recent college passing and rushing season for a QB from CFBD.
     Only uses the most recent season to account for transfer portal.
     Requires minimum 100 passing attempts to filter out garbage time QBs.
+    Updated to check 2025 season first.
     Returns a single dict with passing and rushing stats for that season.
     """
     headers = {"Authorization": f"Bearer {CFBD_KEY}"}
     stats_url = "https://api.collegefootballdata.com/stats/player/season"
 
-    for year in range(2024, 2018, -1):
+    for year in range(2025, 2018, -1):
 
         pass_r = requests.get(stats_url, headers=headers, params={
             "year": year,
@@ -144,6 +145,7 @@ def score_qb_production(stats: dict) -> float:
     Rushing S-curve midpoints:
     - YPC midpoint: 4.0 (average mobile college QB)
     - Rushing TDs midpoint: 5 (average mobile college QB)
+    Pocket passers with negative YPC correctly score near 0 on rushing.
     """
     if not stats:
         return 0
@@ -174,6 +176,7 @@ def score_qb_production(stats: dict) -> float:
 def score_age_qb(age: int) -> float:
     """
     Scores age on a 0-1 scale based on QB dynasty age curves.
+    QBs peak later than skill positions so the curve is wider.
     Age 21 or younger = 1.0, age 27 or older = 0.0.
     Linear scale between 21 and 27.
     """
@@ -209,10 +212,11 @@ def score_qb_dominator(stats: dict) -> float:
 def score_qb(name: str, college: str, age: int) -> dict:
     """
     Combines four factors into a final weighted dynasty score for 2QB TEP QB rookie draft.
-    Weights: production 45%, age 20%, dominator 10%, draft capital 20% (increased for QBs).
+    Weights: production 45%, age 20%, dominator 10%, draft capital 25%.
     Draft capital weighted higher for QBs since starting opportunity
     is heavily determined by where a QB is drafted.
     Landing spot removed because situational context handled by LLM layer.
+    NFL team pulled automatically from draft data for LLM context.
     """
     stats = get_college_qb_stats(name, college)
     draft_info = get_player_draft_info(name)
@@ -232,6 +236,7 @@ def score_qb(name: str, college: str, age: int) -> dict:
 
     return {
         "name": name,
+        "nfl_team": draft_info["nfl_team"],
         "final_score": final_score,
         "production": production,
         "age_score": age_score,
@@ -239,6 +244,7 @@ def score_qb(name: str, college: str, age: int) -> dict:
         "draft_capital": draft,
         "draft_pick": draft_info["overall"],
         "draft_round": draft_info["round"],
+        "draft_season": draft_info["season"],
         "season_used": stats.get("year"),
         "ypa": stats.get("ypa"),
         "completion_pct": stats.get("completion_pct"),
@@ -247,26 +253,3 @@ def score_qb(name: str, college: str, age: int) -> dict:
         "rush_tds": stats.get("rush_tds"),
         "rush_ypc": stats.get("rush_ypc")
     }
-
-
-# ── TEST ──────────────────────────────────────────────────────
-
-result = score_qb(
-    name="Shedeur Sanders",
-    college="Colorado",
-    age=23
-)
-
-for k, v in result.items():
-    print(f"{k}: {v}")
-
-print("\n")
-
-result2 = score_qb(
-    name="Cameron Ward",
-    college="Miami",
-    age=23
-)
-
-for k, v in result2.items():
-    print(f"{k}: {v}")

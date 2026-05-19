@@ -16,6 +16,7 @@ def get_college_rb_stats(player_name: str, college: str) -> list:
     Pulls all available college rushing and receiving seasons for an RB from CFBD.
     Calculates rushing dominator rating against total team rushing production.
     Calculates receiving share against total team receiving production.
+    Updated to include 2025 college season.
     Returns a list of dicts, one per season.
     """
     headers = {"Authorization": f"Bearer {CFBD_KEY}"}
@@ -23,7 +24,7 @@ def get_college_rb_stats(player_name: str, college: str) -> list:
 
     seasons_data = []
 
-    for year in range(2019, 2025):
+    for year in range(2019, 2026):
 
         rush_r = requests.get(stats_url, headers=headers, params={
             "year": year,
@@ -211,6 +212,7 @@ def score_rb(name: str, college: str, age: int) -> dict:
     Weights: age 35%, dominator 25%, receiving role 20%, draft capital 20%.
     Draft capital weighted higher for RBs since opportunity is everything.
     Landing spot removed because backfield situation handled by LLM layer.
+    NFL team pulled automatically from draft data for LLM context.
     """
     seasons = get_college_rb_stats(name, college)
     draft_info = get_player_draft_info(name)
@@ -230,6 +232,7 @@ def score_rb(name: str, college: str, age: int) -> dict:
 
     return {
         "name": name,
+        "nfl_team": draft_info["nfl_team"],
         "final_score": final_score,
         "age_score": age_score,
         "dominator_rating": dominator,
@@ -237,28 +240,6 @@ def score_rb(name: str, college: str, age: int) -> dict:
         "draft_capital": draft,
         "draft_pick": draft_info["overall"],
         "draft_round": draft_info["round"],
+        "draft_season": draft_info["season"],
         "seasons_found": len(seasons)
     }
-
-
-# ── TEST ──────────────────────────────────────────────────────
-
-result = score_rb(
-    name="Ashton Jeanty",
-    college="Boise State",
-    age=21
-)
-
-for k, v in result.items():
-    print(f"{k}: {v}")
-
-print("\n")
-
-result2 = score_rb(
-    name="Omarion Hampton",
-    college="North Carolina",
-    age=21
-)
-
-for k, v in result2.items():
-    print(f"{k}: {v}")

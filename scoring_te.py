@@ -15,11 +15,14 @@ def get_conference_multiplier(conference: str) -> float:
     """
     Returns a multiplier based on conference strength.
     Applied to raw dominator rating before S-curve scaling.
+    Elite conferences get a boost since production against better
+    competition is more predictive of NFL success.
     """
     if not conference:
         return 1.0
 
     conf = conference.lower()
+
     elite = ["sec", "big ten"]
     strong = ["big 12", "acc"]
     mid = ["pac-12", "pac 12", "american athletic", "aac"]
@@ -42,6 +45,7 @@ def get_college_te_stats(player_name: str, college: str) -> list:
     Calculates target share as player receptions / team total receptions.
     Dominator rating calculated against all receivers on team.
     Conference captured for dominator rating adjustment.
+    Updated to include 2025 college season.
     Returns a list of dicts, one per season.
     """
     headers = {"Authorization": f"Bearer {CFBD_KEY}"}
@@ -49,7 +53,7 @@ def get_college_te_stats(player_name: str, college: str) -> list:
 
     seasons_data = []
 
-    for year in range(2019, 2025):
+    for year in range(2019, 2026):
         stats_r = requests.get(stats_url, headers=headers, params={
             "year": year,
             "team": college,
@@ -218,9 +222,10 @@ def get_espn_team_id_map() -> dict:
     return {t["team"]["abbreviation"]: t["team"]["id"] for t in teams}
 
 
-def get_team_passing_attempts(team_id: int, season: int = 2024) -> float:
+def get_team_passing_attempts(team_id: int, season: int = 2025) -> float:
     """
     Pulls total passing attempts for a team from ESPN API.
+    Updated to use 2025 season data.
     Returns passing attempts as float, or 0 if not found.
     """
     url = f"https://site.api.espn.com/apis/site/v2/sports/football/nfl/teams/{team_id}/statistics"
@@ -236,9 +241,9 @@ def get_team_passing_attempts(team_id: int, season: int = 2024) -> float:
 
 def score_landing_spot(nfl_team: str) -> float:
     """
-    Scores landing spot based on 2024 team passing attempts from ESPN.
-    Weight intentionally reduced to 10% since situational context
-    is handled by the LLM analysis layer.
+    Scores landing spot based on 2025 team passing attempts from ESPN.
+    Weight intentionally reduced to 10% since depth chart situation
+    and target share opportunity are handled by the LLM analysis layer.
     Returns 0.5 if team not found.
     """
     team_id_map = get_espn_team_id_map()
@@ -266,9 +271,10 @@ def score_landing_spot(nfl_team: str) -> float:
 def score_te(name: str, college: str, age: int, nfl_team: str) -> dict:
     """
     Combines all five factors into a final weighted dynasty score for TEP TE rookie draft.
-    Weights: age 30%, dominator 25%, target share 15%, landing spot 10%, draft capital 10% (lower for TEs).
+    Weights: age 30%, dominator 35%, target share 15%, landing spot 10%, draft capital 10%.
     Age weighted highest because TEs develop slowest and TEP amplifies age runway.
     Draft capital weighted lower since college production is more predictive for TEs.
+    NFL team passed in by user and also pulled from draft data for LLM context.
     """
     seasons = get_college_te_stats(name, college)
     draft_info = get_player_draft_info(name)
@@ -290,6 +296,7 @@ def score_te(name: str, college: str, age: int, nfl_team: str) -> dict:
 
     return {
         "name": name,
+        "nfl_team": draft_info["nfl_team"] or nfl_team,
         "final_score": final_score,
         "age_score": age_score,
         "dominator_rating": dominator,
@@ -298,30 +305,6 @@ def score_te(name: str, college: str, age: int, nfl_team: str) -> dict:
         "draft_capital": draft,
         "draft_pick": draft_info["overall"],
         "draft_round": draft_info["round"],
+        "draft_season": draft_info["season"],
         "seasons_found": len(seasons)
     }
-
-
-# ── TEST ──────────────────────────────────────────────────────
-
-result = score_te(
-    name="Tyler Warren",
-    college="Penn State",
-    age=23,
-    nfl_team="IND"
-)
-
-for k, v in result.items():
-    print(f"{k}: {v}")
-
-print("\n")
-
-result2 = score_te(
-    name="Colston Loveland",
-    college="Michigan",
-    age=21,
-    nfl_team="CHI"
-)
-
-for k, v in result2.items():
-    print(f"{k}: {v}")

@@ -44,6 +44,7 @@ def get_college_receiving_stats(player_name: str, college: str) -> list:
     Pulls all available college receiving seasons for a player from CFBD.
     Calculates target share as player receptions / team total receptions.
     Also captures conference for dominator rating adjustment.
+    Updated to include 2025 college season.
     Returns a list of dicts, one per season.
     """
     headers = {"Authorization": f"Bearer {CFBD_KEY}"}
@@ -51,7 +52,7 @@ def get_college_receiving_stats(player_name: str, college: str) -> list:
 
     seasons_data = []
 
-    for year in range(2019, 2025):
+    for year in range(2019, 2026):
         stats_r = requests.get(stats_url, headers=headers, params={
             "year": year,
             "team": college,
@@ -222,9 +223,10 @@ def get_espn_team_id_map() -> dict:
     return {t["team"]["abbreviation"]: t["team"]["id"] for t in teams}
 
 
-def get_team_passing_attempts(team_id: int, season: int = 2024) -> float:
+def get_team_passing_attempts(team_id: int, season: int = 2025) -> float:
     """
     Pulls total passing attempts for a team from ESPN API.
+    Updated to use 2025 season data.
     Returns passing attempts as float, or 0 if not found.
     """
     url = f"https://site.api.espn.com/apis/site/v2/sports/football/nfl/teams/{team_id}/statistics"
@@ -240,7 +242,7 @@ def get_team_passing_attempts(team_id: int, season: int = 2024) -> float:
 
 def score_landing_spot(nfl_team: str) -> float:
     """
-    Scores landing spot based on 2024 team passing attempts from ESPN.
+    Scores landing spot based on 2025 team passing attempts from ESPN.
     Weight intentionally reduced to 10% since depth chart situation
     and target share opportunity are handled by the LLM analysis layer.
     Returns 0.5 if team not found.
@@ -273,6 +275,7 @@ def score_wr(name: str, college: str, age: int, nfl_team: str) -> dict:
     Weights: dominator 37%, age 28%, target share 15%, landing spot 10%, draft capital 10%.
     Draft capital pulled automatically from ESPN draft data.
     Landing spot weight reduced because situational context handled by LLM layer.
+    NFL team passed in by user and also pulled from draft data for LLM context.
     """
     seasons = get_college_receiving_stats(name, college)
     draft_info = get_player_draft_info(name)
@@ -294,6 +297,7 @@ def score_wr(name: str, college: str, age: int, nfl_team: str) -> dict:
 
     return {
         "name": name,
+        "nfl_team": draft_info["nfl_team"] or nfl_team,
         "final_score": final_score,
         "dominator_rating": dominator,
         "age_score": age_score,
@@ -302,30 +306,6 @@ def score_wr(name: str, college: str, age: int, nfl_team: str) -> dict:
         "draft_capital": draft,
         "draft_pick": draft_info["overall"],
         "draft_round": draft_info["round"],
+        "draft_season": draft_info["season"],
         "seasons_found": len(seasons)
     }
-
-
-# ── TEST ──────────────────────────────────────────────────────
-
-result = score_wr(
-    name="Malik Nabers",
-    college="LSU",
-    age=22,
-    nfl_team="NYG"
-)
-
-for k, v in result.items():
-    print(f"{k}: {v}")
-
-print("\n")
-
-result2 = score_wr(
-    name="Tetairoa McMillan",
-    college="Arizona",
-    age=21,
-    nfl_team="CAR"
-)
-
-for k, v in result2.items():
-    print(f"{k}: {v}")
