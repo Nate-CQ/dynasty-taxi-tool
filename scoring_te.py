@@ -4,7 +4,7 @@ import math
 from dotenv import load_dotenv
 from draft import get_player_draft_info, score_draft_capital
 
-load_dotenv()
+load_dotenv(override=True)
 
 CFBD_KEY = os.getenv("CFBD_API_KEY")
 
@@ -61,6 +61,10 @@ def get_college_te_stats(player_name: str, college: str) -> list:
         })
 
         stats_results = stats_r.json()
+
+        if not isinstance(stats_results, list):
+            print(f"Warning: unexpected API response for {college} {year}: {stats_results}")
+            continue
 
         player_yards = 0
         player_tds = 0

@@ -1,5 +1,8 @@
 import requests
 import math
+from dotenv import load_dotenv
+
+load_dotenv(override=True)
 
 
 def get_draft_picks(season: int) -> list:

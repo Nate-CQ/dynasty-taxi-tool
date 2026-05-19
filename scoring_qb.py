@@ -4,7 +4,7 @@ import math
 from dotenv import load_dotenv
 from draft import get_player_draft_info, score_draft_capital
 
-load_dotenv()
+load_dotenv(override=True)
 
 CFBD_KEY = os.getenv("CFBD_API_KEY")
 
@@ -30,6 +30,10 @@ def get_college_qb_stats(player_name: str, college: str) -> dict:
             "category": "passing"
         })
         pass_results = pass_r.json()
+
+        if not isinstance(pass_results, list):
+            print(f"Warning: unexpected API response for {college} {year} passing: {pass_results}")
+            continue
 
         att = 0
         completions = 0
@@ -74,6 +78,10 @@ def get_college_qb_stats(player_name: str, college: str) -> dict:
             "category": "rushing"
         })
         rush_results = rush_r.json()
+
+        if not isinstance(rush_results, list):
+            print(f"Warning: unexpected API response for {college} {year} rushing: {rush_results}")
+            rush_results = []
 
         rush_yds = 0
         rush_tds = 0
