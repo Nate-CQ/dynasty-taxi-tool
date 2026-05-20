@@ -6,7 +6,11 @@ from draft import get_player_draft_info, score_draft_capital
 
 load_dotenv(override=True)
 
-CFBD_KEY = os.getenv("CFBD_API_KEY")
+try:
+    import streamlit as st
+    CFBD_KEY = st.secrets["CFBD_API_KEY"]
+except Exception:
+    CFBD_KEY = os.getenv("CFBD_API_KEY")
 
 
 # ── CONFERENCE TIER ───────────────────────────────────────────

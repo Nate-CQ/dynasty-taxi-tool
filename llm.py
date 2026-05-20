@@ -4,7 +4,13 @@ from dotenv import load_dotenv
 
 load_dotenv(override=True)
 
-client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+try:
+    import streamlit as st
+    ANTHROPIC_KEY = st.secrets["ANTHROPIC_API_KEY"]
+except Exception:
+    ANTHROPIC_KEY = os.getenv("ANTHROPIC_API_KEY")
+
+client = anthropic.Anthropic(api_key=ANTHROPIC_KEY)
 
 
 # ── SYSTEM PROMPT ─────────────────────────────────────────────
